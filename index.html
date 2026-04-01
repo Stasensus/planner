@@ -236,6 +236,29 @@ footer kbd{background:var(--card);border:1px solid var(--border);border-radius:4
 .help-content .ok{color:#27ae60;font-weight:600}
 .help-content hr{border:none;border-top:1px solid var(--border);margin:14px 0}
 
+/* Undo button */
+.btn-undo{background:var(--card);color:var(--text2);border:1.5px solid var(--border);border-radius:8px;padding:6px 14px;font-size:.84rem;cursor:pointer;font-family:inherit;transition:all .18s;white-space:nowrap}
+.btn-undo:hover{border-color:var(--blue);color:var(--blue);background:var(--input-focus);transform:translateY(-1px)}
+.btn-undo:disabled{opacity:.35;cursor:default;transform:none}
+
+/* Completed section */
+.completed-section{max-width:1180px;margin:10px auto 30px;padding:0 14px}
+.completed-block{background:var(--card);border-radius:14px;box-shadow:0 2px 12px var(--shadow);padding:16px 15px 12px;min-height:60px;border-top:5px solid #27ae60;transition:all .3s}
+.completed-block .q-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.completed-block .ql{color:#27ae60;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+.completed-block .q-count{font-size:.68rem;background:var(--hover);color:var(--muted);border-radius:10px;padding:1px 8px;font-weight:600}
+.completed-block .qt{font-size:.95rem;font-weight:700;color:var(--text);margin-bottom:1px}
+.completed-block .qh{font-size:.72rem;color:var(--muted);margin-bottom:10px}
+.completed-block .tasklist{columns:2;column-gap:14px}
+.completed-block .taskitem{break-inside:avoid}
+.completed-block .taskitem .tname{text-decoration:line-through;color:var(--muted)}
+.completed-empty{color:var(--muted);font-size:.82rem;font-style:italic;text-align:center;padding:12px 0}
+@media(max-width:700px){.completed-block .tasklist{columns:1}}
+
+/* Drag reorder indicator */
+.taskitem.drag-above{border-top:2.5px solid var(--blue);margin-top:-1px}
+.taskitem.drag-below{border-bottom:2.5px solid var(--blue);margin-bottom:-1px}
+
 /* Responsive */
 @media(max-width:700px){
   .grid{grid-template-columns:1fr;gap:10px}
@@ -281,6 +304,7 @@ footer kbd{background:var(--card);border:1px solid var(--border);border-radius:4
   <input type="file" id="fi" accept=".json" style="display:none" onchange="importData(event)">
   <button class="btn-purple" onclick="openBulkImport()">&#129302; ИИ-сортировка</button>
   <button class="btn-green" onclick="openPrintExport()">&#128424; Экспорт</button>
+  <button class="btn-undo" id="undoBtn" onclick="undo()" disabled title="Отменить (Ctrl+Z)">&#8630; Отменить</button>
 </div>
 <p class="savehint">Данные автоматически сохраняются в браузере &nbsp;&#183;&nbsp; .json для бэкапов &nbsp;&#183;&nbsp; ИИ-сортировка расставит задачи по квадрантам</p>
 
@@ -341,6 +365,18 @@ footer kbd{background:var(--card);border:1px solid var(--border);border-radius:4
     <div class="qt">&#128465; Не важно + Не срочно</div><div class="qh">Исключи или отложи</div>
     <ul class="tasklist" id="small-q4"></ul>
     <button class="btn-addtask" onclick="addTask('small-q4')">+ Добавить дело</button>
+  </div>
+</div>
+
+<!-- Completed Tasks -->
+<div class="sec">&#9989; Выполненные задачи <button class="collapse-all" onclick="collapseAll('completed')">Свернуть все</button> <button class="collapse-all" onclick="clearCompleted()" style="color:var(--red)">Очистить</button></div>
+<div class="completed-section">
+  <div class="completed-block">
+    <div class="q-header"><div class="ql">Выполнено</div><div class="q-count" id="cnt-completed">0</div></div>
+    <div class="qt">&#127881; Готовые задачи</div>
+    <div class="qh">Задачи автоматически попадают сюда при смене статуса на «Готово»</div>
+    <ul class="tasklist" id="completed-list"></ul>
+    <div class="completed-empty" id="completedEmpty">Пока нет выполненных задач</div>
   </div>
 </div>
 
@@ -495,9 +531,12 @@ var SL = ["todo", "progress", "done"];
 var LB = {todo: "&#9744; К выполнению", progress: "&#128260; В работе", done: "&#9989; Готово"};
 var SC = ["s0", "s1", "s2"];
 var IDS = ["big-q1","big-q2","big-q3","big-q4","small-q1","small-q2","small-q3","small-q4"];
+var ALL_IDS = ["big-q1","big-q2","big-q3","big-q4","small-q1","small-q2","small-q3","small-q4","completed-list"];
 var draggedItem = null;
 var draggedFromList = null;
 var pendingDeleteEl = null;
+var undoStack = [];
+var MAX_UNDO = 30;
 
 /* ---- Theme ---- */
 function toggleTheme() {
@@ -547,6 +586,16 @@ function updateStats() {
     var cnt = document.getElementById("cnt-" + id);
     if (cnt) cnt.textContent = items.length;
   });
+  /* Count completed section */
+  var cList = document.getElementById("completed-list");
+  if (cList) {
+    var cItems = cList.querySelectorAll(":scope>.taskitem");
+    cItems.forEach(function() { total++; done++; });
+    var cCnt = document.getElementById("cnt-completed");
+    if (cCnt) cCnt.textContent = cItems.length;
+    var emptyMsg = document.getElementById("completedEmpty");
+    if (emptyMsg) emptyMsg.style.display = cItems.length > 0 ? "none" : "block";
+  }
   document.getElementById("statTotal").textContent = total;
   document.getElementById("statTodo").textContent = todo;
   document.getElementById("statProgress").textContent = prog;
@@ -555,23 +604,62 @@ function updateStats() {
 }
 
 /* ---- Save / Load ---- */
+function collectTasksFromList(ul) {
+  return Array.from(ul.querySelectorAll(":scope>.taskitem")).map(function(li) {
+    return {
+      name: li.querySelector(".tname").value,
+      status: li.dataset.status,
+      due: li.dataset.due || "",
+      notes: li.querySelector(".tnotes textarea") ? li.querySelector(".tnotes textarea").value : "",
+      fromQuadrant: li.dataset.fromQuadrant || "",
+      steps: Array.from(li.querySelectorAll(".stepitem")).map(function(si) {
+        return { name: si.querySelector(".sname").value, done: si.querySelector(".scheck").checked };
+      })
+    };
+  });
+}
+
 function collectData() {
   var d = {};
   IDS.forEach(function(id) {
     var ul = document.getElementById(id); if (!ul) return;
-    d[id] = Array.from(ul.querySelectorAll(":scope>.taskitem")).map(function(li) {
-      return {
-        name: li.querySelector(".tname").value,
-        status: li.dataset.status,
-        due: li.dataset.due || "",
-        notes: li.querySelector(".tnotes textarea") ? li.querySelector(".tnotes textarea").value : "",
-        steps: Array.from(li.querySelectorAll(".stepitem")).map(function(si) {
-          return { name: si.querySelector(".sname").value, done: si.querySelector(".scheck").checked };
-        })
-      };
-    });
+    d[id] = collectTasksFromList(ul);
   });
+  /* Completed section */
+  var cList = document.getElementById("completed-list");
+  if (cList) d["completed-list"] = collectTasksFromList(cList);
   return d;
+}
+
+/* Push current state to undo stack */
+function pushUndo() {
+  undoStack.push(JSON.stringify(collectData()));
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  updateUndoBtn();
+}
+
+function updateUndoBtn() {
+  var btn = document.getElementById("undoBtn");
+  if (btn) btn.disabled = undoStack.length === 0;
+}
+
+function undo() {
+  if (undoStack.length === 0) { showToast("&#10060; Нечего отменять"); return; }
+  var prevState = undoStack.pop();
+  updateUndoBtn();
+  try {
+    var data = JSON.parse(prevState);
+    /* Clear all lists */
+    ALL_IDS.forEach(function(id) { var ul = document.getElementById(id); if (ul) ul.innerHTML = ""; });
+    /* Restore tasks */
+    ALL_IDS.forEach(function(id) {
+      if (data[id]) data[id].forEach(function(t) {
+        addTask(id, t.name, t.status, t.steps, t.due || "", t.notes || "", true, t.fromQuadrant || "");
+      });
+    });
+    save();
+    showToast("&#8630; Действие отменено");
+  } catch(e) { showToast("&#10060; Ошибка отмены"); }
 }
 
 function save() {
@@ -597,10 +685,11 @@ function importData(ev) {
   r.onload = function(e) {
     try {
       var data = JSON.parse(e.target.result);
-      IDS.forEach(function(id) { var ul = document.getElementById(id); if (ul) ul.innerHTML = ""; });
-      IDS.forEach(function(id) {
+      pushUndo();
+      ALL_IDS.forEach(function(id) { var ul = document.getElementById(id); if (ul) ul.innerHTML = ""; });
+      ALL_IDS.forEach(function(id) {
         if (data[id]) data[id].forEach(function(t) {
-          addTask(id, t.name, t.status, t.steps, t.due || "", t.notes || "");
+          addTask(id, t.name, t.status, t.steps, t.due || "", t.notes || "", true, t.fromQuadrant || "");
         });
       });
       save();
@@ -622,7 +711,7 @@ function closeConfirm() {
   pendingDeleteEl = null;
 }
 function confirmDelete() {
-  if (pendingDeleteEl) { pendingDeleteEl.remove(); save(); }
+  if (pendingDeleteEl) { pushUndo(); pendingDeleteEl.remove(); save(); }
   closeConfirm();
   showToast("&#128465; Задача удалена");
 }
@@ -644,19 +733,41 @@ function clearSearchField() {
   filterTasks();
 }
 
-/* ---- Collapse All ---- */
+/* ---- Collapse / Expand All ---- */
 function collapseAll(prefix) {
-  IDS.forEach(function(id) {
-    if (id.indexOf(prefix) !== 0) return;
+  var targetIds;
+  if (prefix === "completed") {
+    targetIds = ["completed-list"];
+  } else {
+    targetIds = IDS.filter(function(id) { return id.indexOf(prefix) === 0; });
+  }
+  /* Check if any are currently open */
+  var anyOpen = false;
+  targetIds.forEach(function(id) {
     var ul = document.getElementById(id); if (!ul) return;
     ul.querySelectorAll(".taskitem").forEach(function(li) {
-      li.querySelector(".stepslist").classList.remove("open");
-      li.querySelector(".ttoggle").classList.remove("open");
-      var notes = li.querySelector(".tnotes");
-      if (notes) notes.classList.remove("open");
+      if (li.querySelector(".stepslist.open") || (li.querySelector(".tnotes") && li.querySelector(".tnotes.open"))) anyOpen = true;
     });
   });
-  showToast("&#128194; Все задачи свёрнуты");
+  /* Toggle: if any open => collapse all, otherwise expand all */
+  targetIds.forEach(function(id) {
+    var ul = document.getElementById(id); if (!ul) return;
+    ul.querySelectorAll(".taskitem").forEach(function(li) {
+      var stepsEl = li.querySelector(".stepslist");
+      var notesEl = li.querySelector(".tnotes");
+      var toggleBtn = li.querySelector(".ttoggle");
+      if (anyOpen) {
+        if (stepsEl) stepsEl.classList.remove("open");
+        if (notesEl) notesEl.classList.remove("open");
+        if (toggleBtn) toggleBtn.classList.remove("open");
+      } else {
+        if (stepsEl) stepsEl.classList.add("open");
+        if (notesEl) notesEl.classList.add("open");
+        if (toggleBtn) toggleBtn.classList.add("open");
+      }
+    });
+  });
+  showToast(anyOpen ? "&#128194; Все задачи свёрнуты" : "&#128194; Все задачи развёрнуты");
 }
 
 /* ---- Progress bar ---- */
@@ -687,43 +798,91 @@ function updateDueBadge(li) {
 }
 
 /* ---- Drag & Drop ---- */
+var dropTarget = null; /* the task item we're hovering over */
+var dropPosition = "after"; /* "before" or "after" */
+
 function onDragOver(e) {
   e.preventDefault();
   e.currentTarget.classList.add("drag-over");
+  /* Determine drop position within the list */
+  var qid = e.currentTarget.getAttribute("data-qid");
+  var targetList = document.getElementById(qid);
+  if (!targetList) return;
+  clearDropIndicators();
+  var tasks = Array.from(targetList.querySelectorAll(":scope>.taskitem:not(.dragging)"));
+  dropTarget = null;
+  for (var i = 0; i < tasks.length; i++) {
+    var rect = tasks[i].getBoundingClientRect();
+    var midY = rect.top + rect.height / 2;
+    if (e.clientY < midY) {
+      dropTarget = tasks[i];
+      dropPosition = "before";
+      tasks[i].classList.add("drag-above");
+      return;
+    }
+  }
+  /* If past all items, drop at end */
+  if (tasks.length > 0) {
+    dropTarget = tasks[tasks.length - 1];
+    dropPosition = "after";
+    tasks[tasks.length - 1].classList.add("drag-below");
+  }
 }
 function onDragLeave(e) {
-  /* Only remove if leaving the quadrant itself */
   var rect = e.currentTarget.getBoundingClientRect();
   if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
     e.currentTarget.classList.remove("drag-over");
+    clearDropIndicators();
   }
+}
+function clearDropIndicators() {
+  document.querySelectorAll(".drag-above,.drag-below").forEach(function(el) {
+    el.classList.remove("drag-above", "drag-below");
+  });
 }
 function onDrop(e) {
   e.preventDefault();
   e.currentTarget.classList.remove("drag-over");
+  clearDropIndicators();
   if (!draggedItem) return;
+  pushUndo();
   var qid = e.currentTarget.getAttribute("data-qid");
   var targetList = document.getElementById(qid);
   if (!targetList) return;
-  targetList.appendChild(draggedItem);
+  /* Insert at specific position */
+  if (dropTarget && dropPosition === "before") {
+    targetList.insertBefore(draggedItem, dropTarget);
+  } else if (dropTarget && dropPosition === "after" && dropTarget.nextElementSibling) {
+    /* Insert after dropTarget but before buttons */
+    var next = dropTarget.nextElementSibling;
+    if (next && next.classList.contains("taskitem")) {
+      targetList.insertBefore(draggedItem, next);
+    } else {
+      targetList.appendChild(draggedItem);
+    }
+  } else {
+    targetList.appendChild(draggedItem);
+  }
   draggedItem.classList.remove("dragging");
   draggedItem.classList.add("highlight");
   var item = draggedItem;
   setTimeout(function() { item.classList.remove("highlight"); }, 700);
   draggedItem = null;
+  dropTarget = null;
   save();
   showToast("&#10004; Задача перемещена");
 }
 
 /* ---- Add Task ---- */
-function addTask(listId, name, status, steps, due, notes) {
-  name = name || ""; status = status || "todo"; steps = steps || []; due = due || ""; notes = notes || "";
+function addTask(listId, name, status, steps, due, notes, skipUndo, fromQuadrant) {
+  name = name || ""; status = status || "todo"; steps = steps || []; due = due || ""; notes = notes || ""; fromQuadrant = fromQuadrant || "";
   var idx = SL.indexOf(status); if (idx < 0) idx = 0;
   var ul = document.getElementById(listId); if (!ul) return;
   var li = document.createElement("li");
   li.className = "taskitem";
   li.dataset.status = status;
   li.dataset.due = due;
+  li.dataset.fromQuadrant = fromQuadrant;
   li.draggable = true;
 
   var sid = "s" + Date.now() + Math.random().toString(36).slice(2, 7);
@@ -799,6 +958,7 @@ function togglePanel(li) {
 
 /* ---- Cycle Status ---- */
 function cycleStatus(li) {
+  pushUndo();
   var cur = li.dataset.status;
   var idx = (SL.indexOf(cur) + 1) % 3;
   var next = SL[idx];
@@ -807,6 +967,33 @@ function cycleStatus(li) {
   btn.className = "tstatus " + SC[idx];
   btn.innerHTML = LB[next];
   updateDueBadge(li);
+  /* Auto-move to completed section when done */
+  if (next === "done") {
+    var currentList = li.parentElement;
+    if (currentList && currentList.id !== "completed-list") {
+      li.dataset.fromQuadrant = currentList.id;
+      var completedList = document.getElementById("completed-list");
+      if (completedList) {
+        completedList.appendChild(li);
+        li.classList.add("highlight");
+        setTimeout(function() { li.classList.remove("highlight"); }, 700);
+        showToast("&#127881; Задача выполнена и перемещена!");
+      }
+    }
+  }
+  /* If cycling back from done (in completed section), move back to original quadrant */
+  if (next === "todo" && li.parentElement && li.parentElement.id === "completed-list") {
+    var origQ = li.dataset.fromQuadrant;
+    if (origQ) {
+      var origList = document.getElementById(origQ);
+      if (origList) {
+        origList.appendChild(li);
+        li.classList.add("highlight");
+        setTimeout(function() { li.classList.remove("highlight"); }, 700);
+        showToast("&#8630; Задача возвращена в квадрант");
+      }
+    }
+  }
   save();
 }
 
@@ -866,8 +1053,12 @@ function migrateV4() {
       var d = JSON.parse(sv);
       IDS.forEach(function(id) {
         if (d[id]) d[id].forEach(function(t) {
-          addTask(id, t.name, t.status, t.steps, t.due || "", t.notes || "");
+          addTask(id, t.name, t.status, t.steps, t.due || "", t.notes || "", true, t.fromQuadrant || "");
         });
+      });
+      /* Load completed tasks */
+      if (d["completed-list"]) d["completed-list"].forEach(function(t) {
+        addTask("completed-list", t.name, t.status, t.steps, t.due || "", t.notes || "", true, t.fromQuadrant || "");
       });
     } else {
       migrateV4();
@@ -876,14 +1067,34 @@ function migrateV4() {
   updateStats();
 })();
 
+/* ---- Clear completed tasks ---- */
+function clearCompleted() {
+  var cList = document.getElementById("completed-list");
+  if (!cList || cList.querySelectorAll(".taskitem").length === 0) {
+    showToast("&#10060; Нет выполненных задач для очистки");
+    return;
+  }
+  pushUndo();
+  cList.innerHTML = "";
+  save();
+  showToast("&#128465; Выполненные задачи очищены");
+}
+
 /* Close confirm on overlay click */
 document.getElementById("confirmOverlay").addEventListener("click", function(e) {
   if (e.target === this) closeConfirm();
 });
 
-/* Close confirm on Escape */
+/* Close confirm on Escape + Ctrl+Z undo */
 document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") closeConfirm();
+  if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+    /* Don't undo if typing in an input */
+    var tag = document.activeElement ? document.activeElement.tagName : "";
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    e.preventDefault();
+    undo();
+  }
 });
 
 /* Periodic due date refresh */
@@ -1262,6 +1473,7 @@ function updateAiBadge(i) {
 }
 
 function applyAiResults() {
+  pushUndo();
   aiSuggestions.forEach(function(s) {
     var q = s.quadrant || "q2";
     var listId = bulkSection + "-" + q;
@@ -1330,15 +1542,18 @@ function generatePrintView() {
   html += '<h1>&#128203; Матрица Эйзенхауэра</h1>';
   html += '<div class="date">Экспорт: ' + new Date().toLocaleDateString("ru-RU", {day:"numeric",month:"long",year:"numeric"}) + '</div>';
 
-  var filteredIds = IDS.filter(function(id) {
+  sectionNames["completed-list"] = "&#9989; Выполненные задачи";
+  var allExportIds = IDS.concat(["completed-list"]);
+  var filteredIds = allExportIds.filter(function(id) {
     if (exportScope === "all") return true;
+    if (id === "completed-list") return exportScope === "all";
     return id.indexOf(exportScope) === 0;
   });
 
   filteredIds.forEach(function(id) {
     var tasks = data[id] || [];
     var qKey = id.replace("big-","").replace("small-","");
-    var bg = colors[qKey] || "#3498db";
+    var bg = id === "completed-list" ? "#27ae60" : (colors[qKey] || "#3498db");
     html += '<div class="section">';
     html += '<h2 style="background:' + bg + '">' + sectionNames[id] + '</h2>';
     if (tasks.length === 0) {
